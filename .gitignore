@@ -1,2 +1,3 @@
-mcp/*
+/mcp/*
 *.ipynb
+utities_graph.py
