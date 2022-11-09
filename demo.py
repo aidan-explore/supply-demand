@@ -3,6 +3,8 @@ import pandas as pd
 import datetime as dt
 import streamlit as st
 from pyairtable import Table
+import logging
+
 
 # TODO: move to environment variables
 AIRTABLE_TOKEN = os.environ['AIRTABLE_TOKEN']
@@ -103,8 +105,10 @@ st.set_page_config(
     page_title="ExploreAI Mission Requirements", page_icon="⬇", layout="centered"
 )
 
-# Original time series chart. Omitted `get_chart` for clarity
+
 df = get_requirements()
+logging.info('able to get ' + df.count() + ' requirements')
+
 df = summarise_start_end(df)
 df, role_dict = get_relations(df)
 
