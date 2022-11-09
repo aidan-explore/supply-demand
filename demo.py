@@ -1,3 +1,4 @@
+import os
 import pandas as pd
 import datetime as dt
 import streamlit as st
@@ -5,7 +6,7 @@ import plotly.express as px
 from pyairtable import Table
 
 # TODO: move to environment variables
-AIRTABLE_TOKEN = "keyK2fCPK8oM4PvFI"
+AIRTABLE_TOKEN = os.environ['AIRTABLE_TOKEN']
 AIRTABLE_BASE_ID = "appTZVq2CZuxr4CoZ"
 
 def create_relations(input_series : pd.Series) -> dict:
