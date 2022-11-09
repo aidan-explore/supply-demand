@@ -107,8 +107,6 @@ st.set_page_config(
 
 
 df = get_requirements()
-logging.info('able to get ' + df.count() + ' requirements')
-
 df = summarise_start_end(df)
 df, role_dict = get_relations(df)
 
