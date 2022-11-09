@@ -1,3 +1,4 @@
-/mcp/*
+venv/*
 *.ipynb
 utities_graph.py
+init_env_vars.sh
