@@ -116,7 +116,7 @@ st.write("Give more context to your time series using annotations!")
 
 choice_start = st.sidebar.date_input('Select your start date:', value=pd.to_datetime('2022-04-01')) 
 choice_end   = st.sidebar.date_input('Select your end date:', value=pd.to_datetime('2023-03-31')) 
-
+choice_client = st.sidebar.multiselect('Select your client:', ('Thames', 'Southern')) 
 choice_role  = st.sidebar.multiselect('Select your roles:', set([v['name'] for v in role_dict.values()]))
     
 chart = get_chart(df, choice_start, choice_end, choice_role)
