@@ -5,8 +5,6 @@ import streamlit as st
 from pyairtable import Table
 import logging
 
-
-# TODO: move to environment variables
 AIRTABLE_TOKEN = os.environ['AIRTABLE_TOKEN']
 AIRTABLE_BASE_ID = "appTZVq2CZuxr4CoZ"
 
@@ -105,14 +103,12 @@ st.set_page_config(
     page_title="ExploreAI Mission Requirements", page_icon="⬇", layout="centered"
 )
 
-
 df = get_requirements()
 df = summarise_start_end(df)
 df, role_dict = get_relations(df)
 
-
 st.title("⬇ Mission Requirements")
-st.write("Give more context to your time series using annotations!")
+st.write("Number of people required by month")
 
 choice_start = st.sidebar.date_input('Select your start date:', value=pd.to_datetime('2022-04-01')) 
 choice_end   = st.sidebar.date_input('Select your end date:', value=pd.to_datetime('2023-03-31')) 
