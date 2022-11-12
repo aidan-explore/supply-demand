@@ -2,7 +2,7 @@
 id: ADR-2
 title: Using streamlit
 date: 2022/10/10
-status: Accepted
+status: Proposed
 ---
 
 # Challenge
