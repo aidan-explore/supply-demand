@@ -103,6 +103,8 @@ st.set_page_config(
     page_title="ExploreAI Mission Requirements", page_icon="⬇", layout="centered"
 )
 
+st.image(image='eai.png',caption='https://explore.ai')
+
 df = get_requirements()
 df = summarise_start_end(df)
 df, role_dict = get_relations(df)
