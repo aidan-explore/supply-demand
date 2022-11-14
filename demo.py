@@ -76,28 +76,34 @@ def summarise_start_end(df: pd.DataFrame, freq = "1M", start_col: str = '_start_
     return df_temp
 
 @st.experimental_memo()
-def get_relations(df):
+def get_relations(df, column_name:str = "Role"):
     
     roles       = Table(AIRTABLE_TOKEN, AIRTABLE_BASE_ID, "Roles")
-    dict_roles  = create_relations(df["Role"])
+    dict_roles  = create_relations(df[column_name])
 
-    get_relation_name(dict_roles, roles, "Role")
+    get_relation_name(dict_roles, roles, column_name)
     
     return df, dict_roles
 
 
 # TODO: fix get_state error in caching this request
 # @st.experimental_memo(ttl=60 * 60 * 24)
-def get_chart(data, start_date: dt.datetime, end_date: dt.datetime, roles: list):
+def get_chart(data, start_date: dt.datetime, end_date: dt.datetime, 
+              roles: list, groupby: str):
     date_mask = (data['Month_End'] >= pd.to_datetime(start_date)) & (data['Month_End'] <= pd.to_datetime(end_date))
     df = data[date_mask]
     
-    # TODO: fix the role_mask
-    # if roles:    
-    #     role_mask = data["Role"].isin(roles)
-    #     df = df[role_mask]
+    if roles:    
+        role_mask = df["Role"].isin(roles)
+        df = df[role_mask]
+    
+    if groupby in df.columns:
+        df = df.pivot_table(columns=groupby, index='Month_End', values="Capacity", aggfunc="sum")
         
-    return st.bar_chart(df, x="Month_End", y="Capacity")
+    else:
+        df = df.groupby(["Month_End"]).sum("Capacity")
+        
+    return st.bar_chart(df)
 
 st.set_page_config(
     page_title="ExploreAI Mission Requirements", page_icon="⬇", layout="centered"
@@ -112,10 +118,11 @@ df, role_dict = get_relations(df)
 st.title("⬇ Mission Requirements")
 st.write("Number of people required by month")
 
-choice_start = st.sidebar.date_input('Select your start date:', value=pd.to_datetime('2022-04-01')) 
-choice_end   = st.sidebar.date_input('Select your end date:', value=pd.to_datetime('2023-03-31')) 
-choice_client = st.sidebar.multiselect('Select your client:', ('Thames', 'Southern')) 
-choice_role  = st.sidebar.multiselect('Select your roles:', set([v['name'] for v in role_dict.values()]))
+# define the streamlit sidebar
+choice_start   = st.sidebar.date_input('Select your start date:', value=pd.to_datetime('2022-04-01')) 
+choice_end     = st.sidebar.date_input('Select your end date:', value=pd.to_datetime('2023-03-31')) 
+choice_groupby = st.sidebar.radio('Select what to group by:', ('None', 'Seniority',)) 
+choice_role    = st.sidebar.multiselect('Select your roles:', set([v['name'] for v in role_dict.values()]))
     
-chart = get_chart(df, choice_start, choice_end, choice_role)
+chart = get_chart(df, start_date=choice_start, end_date=choice_end, roles=choice_role, groupby=choice_groupby)
 
