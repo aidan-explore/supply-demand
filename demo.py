@@ -30,6 +30,7 @@ def get_relation_name(dict_relation : dict, airtable : Table, field: str) -> dic
     
     return dict_relation
 
+# REFACTOR: not needed as the data shouold not allow for many-to-many relationships
 def get_first_list(input):
     if type(input) == str:
         return input
@@ -42,7 +43,6 @@ def get_first_list(input):
 def get_requirements():
     
     mission_requirements = Table(AIRTABLE_TOKEN, AIRTABLE_BASE_ID, "Mission Requirements")
-
     
     require_fields = ['Requirement', 'Mission', 'Role', 'Seniority', 'Capacity', 'Client', '_start_date', '_end_date', '_prob']
 
@@ -83,6 +83,8 @@ def get_relations(df, column_name:str = "Role"):
 
     get_relation_name(dict_roles, roles, column_name)
     
+    df[column_name + "_lookup"] = df[column_name].apply(lambda x: dict_roles[x[0]]['name'])
+    
     return df, dict_roles
 
 
@@ -94,16 +96,18 @@ def get_chart(data, start_date: dt.datetime, end_date: dt.datetime,
     df = data[date_mask]
     
     if roles:    
-        role_mask = df["Role"].isin(roles)
+        role_mask = df["Role_lookup"].isin(roles)
         df = df[role_mask]
     
     if groupby in df.columns:
-        df = df.pivot_table(columns=groupby, index='Month_End', values="Capacity", aggfunc="sum")
+        df_chart = df.pivot_table(columns=groupby, index='Month_End', values="Capacity", aggfunc="sum")
         
     else:
-        df = df.groupby(["Month_End"]).sum("Capacity")
+        df_chart = df.groupby(["Month_End"]).sum("Capacity")
         
-    return st.bar_chart(df)
+    st.bar_chart(df_chart)
+    
+    st.dataframe(df)
 
 st.set_page_config(
     page_title="ExploreAI Mission Requirements", page_icon="⬇", layout="centered"
@@ -121,8 +125,8 @@ st.write("Number of people required by month")
 # define the streamlit sidebar
 choice_start   = st.sidebar.date_input('Select your start date:', value=pd.to_datetime('2022-04-01')) 
 choice_end     = st.sidebar.date_input('Select your end date:', value=pd.to_datetime('2023-03-31')) 
-choice_groupby = st.sidebar.radio('Select what to group by:', ('None', 'Seniority',)) 
-choice_role    = st.sidebar.multiselect('Select your roles:', set([v['name'] for v in role_dict.values()]), disabled=True)
+choice_groupby = st.sidebar.radio('Select what to group by:', ('None', 'Seniority', "Role_lookup")) 
+choice_role    = st.sidebar.multiselect('Select your roles:', set([v['name'] for v in role_dict.values()]))
     
 chart = get_chart(df, start_date=choice_start, end_date=choice_end, roles=choice_role, groupby=choice_groupby)
 
