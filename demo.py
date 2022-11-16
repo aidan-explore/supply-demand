@@ -9,8 +9,8 @@ AIRTABLE_TOKEN = os.environ['AIRTABLE_TOKEN']
 AIRTABLE_BASE_ID = "appTZVq2CZuxr4CoZ"
 
 AIRTABLE_SCHEMA = {
-    'Mission Requirements' : ['Requirement', 'Mission', 'Role', 'Seniority', 'Capacity', 'Client', '_start_date', '_end_date', '_prob'],
-    'Mission Logs' : ['Client', 'Mission Log', 'Mission', 'Role', 'Seniority', 'EXPLORER', 'Capacity', '_start_date', '_end_date', 'mission_requirement']
+    'Mission Requirements' : ['Requirement', 'Mission', 'Role', 'Seniority', 'Capacity', 'Client', '_start_date', '_end_date', '_prob', "Scenario"],
+    'Mission Logs' : ['Client', 'Mission Log', 'Mission', 'Role', 'Seniority', 'EXPLORER', 'Capacity', '_start_date', '_end_date', 'mission_requirement', "Scenario"]
 }
 
 # REFACTOR: not needed as the data shouold not allow for many-to-many relationships
@@ -133,23 +133,28 @@ roles     = get_relation_name("Roles", 'Role')
 missions  = get_relation_name("Mission", "Mission")
 clients   = get_relation_name("Clients", "Client")
 explorers = get_relation_name("EXPLORER", "EXPLORER")
+scenarios = get_relation_name("Scenarios", "Scenario")
 
 def get_log_table(table_name:str):
     df = get_requirements(table_name)    
     df = summarise_start_end(df)
     
     link_dict = {}
-    df, link_dict['Role']    = get_relations(df, roles, "Role")
-    df, link_dict['Mission'] = get_relations(df, missions, "Mission")
-    df, link_dict['Client']  = get_relations(df, clients, "Client")
+    df, link_dict['Role']      = get_relations(df, roles, "Role")
+    df, link_dict['Mission']   = get_relations(df, missions, "Mission")
+    df, link_dict['Client']    = get_relations(df, clients, "Client")
     df, link_dict['Explorer']  = get_relations(df, explorers, "EXPLORER")
+    df, link_dict['Scenarios'] = get_relations(df, scenarios, "Scenario")
     
     return df, link_dict
 
 df_requirements, _  = get_log_table('Mission Requirements')
 df_mission_logs, _  = get_log_table('Mission Logs')
 
+df_requirements = df_requirements[df_requirements['Scenario'] != "9. Lost - 0%"]
+
 df_mission_logs['_requirement'] = df_mission_logs['mission_requirement'].apply(get_first_list)
+df_mission_logs = df_mission_logs[df_mission_logs["Scenario"] != "Rejected"]
 df = df_mission_logs.groupby(['_requirement', 'Month_End']).sum('Capacity')
 df.rename(columns={'Capacity' : 'Allocation'}, inplace=True)
 
@@ -157,15 +162,24 @@ df_gaps = df_requirements.join(df, on=['index', 'Month_End'])
 df_gaps['Allocation'].fillna(0, inplace=True)
 df_gaps['Gap'] = df_gaps['Capacity'] - df_gaps['Allocation']
 
-# define the streamlit sidebar
-choice_start   = st.sidebar.date_input('Select your start date:', value=pd.to_datetime('2022-04-01')) 
-choice_end     = st.sidebar.date_input('Select your end date:', value=pd.to_datetime('2023-03-31')) 
-choice_groupby = st.sidebar.radio('Select what to group by:', ('None', 'Seniority', "Role_Name", "Mission_Name", 'Client_Name')) 
-choice_role    = st.sidebar.multiselect('Select your roles:', roles['Role_Name'].unique())
-choice_client  = st.sidebar.multiselect('Select your Client:', clients['Client_Name'].unique())
-choice_mission = st.sidebar.multiselect('Select your mission:', missions['Mission_Name'].unique())
+df_explorers = df_mission_logs.groupby(["_EXPLORER", 'Month_End']).sum('Allocations')
+df_explorers.reset_index(inplace=True)
+df_explorers.set_index("_EXPLORER", inplace=True)
+df_explorers = explorers.join(df_explorers)
+df_explorers['Capacity'].fillna(0, inplace=True)
+df_explorers['Availability'] = 1 - df_explorers['Capacity']
+df_explorers['Month_End'] = df_explorers['Month_End'].dt.date
 
-tab1, tab2, tab3, tab4 = st.tabs(["Requirements", "Allocations", "Gaps", "All Data"])
+# define the streamlit sidebar
+choice_start    = st.sidebar.date_input('Select your start date:', value=pd.to_datetime('2022-04-01')) 
+choice_end      = st.sidebar.date_input('Select your end date:', value=pd.to_datetime('2023-03-31')) 
+choice_groupby  = st.sidebar.radio('Select what to group by:', ('None', 'Seniority', "Role_Name", "Mission_Name", 'Client_Name', "Scenario")) 
+choice_role     = st.sidebar.multiselect('Select your Roles:', roles['Role_Name'].unique())
+choice_client   = st.sidebar.multiselect('Select your Client:', clients['Client_Name'].unique())
+choice_mission  = st.sidebar.multiselect('Select your Mission:', missions['Mission_Name'].unique())
+choice_scenario = st.sidebar.multiselect('Select your Scenarios:', scenarios['Scenario_Name'].unique(), disabled=True)
+
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["Requirements", "Allocations", "Gaps", "Explorers", "All Data"])
     
 with tab1:
     st.title("Mission Requirements")
@@ -191,6 +205,26 @@ with tab3:
     st.dataframe(df[["Mission_Name", "Role_Name", 'Seniority', 'Month_End', "Capacity", 'Allocation', 'Gap']].drop_duplicates())
     
 with tab4:
+    st.title("Explorer Allocations")
+    st.write("Number of people allocated by month")
+    st.write("not linked to filters on the left on left")
+        
+    show_not_allocated = st.checkbox("Show only Explorers not fully allocated")
+    
+    mask = (df_explorers['Month_End'] >= pd.to_datetime(choice_start)) & (df_explorers['Month_End'] <= pd.to_datetime(choice_end))
+    df = df_explorers[mask]    
+    
+    if show_not_allocated:
+        df = df[df['Capacity'] != 1]
+        
+    df = df.pivot_table(index="EXPLORER_Name", columns="Month_End", values="Capacity", fill_value=0, aggfunc="sum")
+
+    st.dataframe(df.drop_duplicates())
+
+    
+with tab5:
+    st.dataframe(scenarios)
+
     
     st.write("Requirements table")
     st.dataframe(df_requirements)
@@ -200,4 +234,5 @@ with tab4:
     
     st.write("add up requirements")
     st.dataframe(df_gaps)
+    
 
