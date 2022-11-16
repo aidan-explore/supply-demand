@@ -22,6 +22,7 @@ def get_first_list(input):
     
     return None
 
+@st.experimental_memo()
 def get_relation_name(table_name: str, field: str) -> pd.DataFrame:
     airtable   = Table(AIRTABLE_TOKEN, AIRTABLE_BASE_ID, table_name)
     get_data   = {k['id']: k['fields'][field] for k in airtable.all()}
@@ -29,6 +30,7 @@ def get_relation_name(table_name: str, field: str) -> pd.DataFrame:
 
     return df_lookups
 
+@st.experimental_memo()
 def create_relations(input_series : pd.Series) -> dict:
     dict_relation = {}
 
@@ -93,8 +95,7 @@ def summarise_start_end(df: pd.DataFrame, freq = "1M", start_col: str = '_start_
     
     return df_temp
 
-# TODO: fix get_state error in caching this request
-# @st.experimental_memo(ttl=60 * 60 * 24)
+@st.experimental_memo()
 def get_chart(data, start_date: dt.datetime, end_date: dt.datetime, 
               roles: list, clients: list, missions:list,
               groupby: str, values: str = "Capacity"):
@@ -135,6 +136,7 @@ clients   = get_relation_name("Clients", "Client")
 explorers = get_relation_name("EXPLORER", "EXPLORER")
 scenarios = get_relation_name("Scenarios", "Scenario")
 
+@st.experimental_memo(ttl=60 * 60 * 24)
 def get_log_table(table_name:str):
     df = get_requirements(table_name)    
     df = summarise_start_end(df)
@@ -148,27 +150,50 @@ def get_log_table(table_name:str):
     
     return df, link_dict
 
-df_requirements, _  = get_log_table('Mission Requirements')
-df_mission_logs, _  = get_log_table('Mission Logs')
+@st.experimental_memo()
+def get_mission_requirements():
 
-df_requirements = df_requirements[df_requirements['Scenario'] != "9. Lost - 0%"]
+    df, _  = get_log_table('Mission Requirements')
+    df     = df[df['Scenario'] != "9. Lost - 0%"]
+    
+    return df
 
-df_mission_logs['_requirement'] = df_mission_logs['mission_requirement'].apply(get_first_list)
-df_mission_logs = df_mission_logs[df_mission_logs["Scenario"] != "Rejected"]
-df = df_mission_logs.groupby(['_requirement', 'Month_End']).sum('Capacity')
-df.rename(columns={'Capacity' : 'Allocation'}, inplace=True)
+@st.experimental_memo()
+def get_mission_logs():
+    
+    df, _  = get_log_table('Mission Logs')
+    df['_requirement'] = df['mission_requirement'].apply(get_first_list)
+    df = df[df["Scenario"] != "Rejected"]
+    
+    df_require = df.groupby(['_requirement', 'Month_End']).sum('Capacity')
+    df_require.rename(columns={'Capacity' : 'Allocation'}, inplace=True)
+    
+    return df, df_require
 
-df_gaps = df_requirements.join(df, on=['index', 'Month_End'])
-df_gaps['Allocation'].fillna(0, inplace=True)
-df_gaps['Gap'] = df_gaps['Capacity'] - df_gaps['Allocation']
+@st.experimental_memo()
+def get_require_gaps(df_requirements, df_require_logs):
+    df_gaps = df_requirements.join(df_require_logs, on=['index', 'Month_End'])
+    df_gaps['Allocation'].fillna(0, inplace=True)
+    df_gaps['Gap'] = df_gaps['Capacity'] - df_gaps['Allocation']
+    
+    return df_gaps
 
-df_explorers = df_mission_logs.groupby(["_EXPLORER", 'Month_End']).sum('Allocations')
-df_explorers.reset_index(inplace=True)
-df_explorers.set_index("_EXPLORER", inplace=True)
-df_explorers = explorers.join(df_explorers)
-df_explorers['Capacity'].fillna(0, inplace=True)
-df_explorers['Availability'] = 1 - df_explorers['Capacity']
-df_explorers['Month_End'] = df_explorers['Month_End'].dt.date
+@st.experimental_memo()
+def get_explorer_allocations(df_mission_logs):
+    df_explorers = df_mission_logs.groupby(["_EXPLORER", 'Month_End']).sum('Allocations')
+    df_explorers.reset_index(inplace=True)
+    df_explorers.set_index("_EXPLORER", inplace=True)
+    df_explorers = explorers.join(df_explorers)
+    df_explorers['Capacity'].fillna(0, inplace=True)
+    df_explorers['Availability'] = 1 - df_explorers['Capacity']
+    df_explorers['Month_End'] = df_explorers['Month_End'].dt.date
+    
+    return df_explorers
+    
+df_requirements = get_mission_requirements()
+df_mission_logs, df_require_logs = get_mission_logs()
+df_gaps = get_require_gaps(df_requirements, df_require_logs)
+df_explorers = get_explorer_allocations(df_mission_logs)
 
 # define the streamlit sidebar
 choice_start    = st.sidebar.date_input('Select your start date:', value=pd.to_datetime('2022-04-01')) 
@@ -225,7 +250,6 @@ with tab4:
 with tab5:
     st.dataframe(scenarios)
 
-    
     st.write("Requirements table")
     st.dataframe(df_requirements)
     
