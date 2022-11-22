@@ -16,9 +16,6 @@ AIRTABLE_SCHEMA = {
     'Mission Logs' : ['Client', 'Mission Log', 'Mission', 'Role', 'Seniority', 'EXPLORER', 'Capacity', "_prob", "_renewal", '_start_date', '_end_date', 'mission_requirement', "Scenario"]
 }
 
-def get_opportunities():
-    return "https://main-apiservice.azurewebsites.net/opportunities/all?format=csv"
-
 def get_first_list(input):
     if type(input) == str:
         return input
@@ -78,7 +75,7 @@ def get_requirements(table_name:str) -> pd.DataFrame:
 
     return df
 
-# @st.experimental_memo()
+@st.experimental_memo()
 def summarise_start_end(df: pd.DataFrame, freq = "1M", start_col: str = '_start_date', end_col: str = '_end_date', format='%Y-%m-%d') -> pd.DataFrame:
     
     df = df.reset_index()
@@ -105,6 +102,7 @@ def summarise_start_end(df: pd.DataFrame, freq = "1M", start_col: str = '_start_
         
     return df_temp
 
+@st.experimental_memo()
 def df_filter_dates(data: pd.DataFrame, start_date: dt.datetime, end_date: dt.datetime) -> pd.DataFrame:
     
     mask = (data['Month_End'] >= pd.to_datetime(start_date)) & (data['Month_End'] <= pd.to_datetime(end_date))
@@ -113,6 +111,7 @@ def df_filter_dates(data: pd.DataFrame, start_date: dt.datetime, end_date: dt.da
     return df
     
 
+@st.experimental_memo()
 def df_filter_isin(data: pd.DataFrame, mask_dict:dict) -> pd.DataFrame:
     
     df = data
@@ -168,7 +167,7 @@ requirements_filter = {
     "Scenario_Name" : choice_scenario,
     }
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["Requirements", "Allocations", "Gaps", "Explorers", "All Data"])
+tab_require, tab_allocate, tab_gap, tab_explorers, tab_data = st.tabs(["Requirements", "Allocations", "Gaps", "Explorers", "All Data"])
 
 @st.experimental_memo(ttl=60 * 60 * 24)
 def get_log_table(table_name:str):
@@ -183,7 +182,7 @@ def get_log_table(table_name:str):
     
     return df, link_dict
 
-# @st.experimental_memo()
+@st.experimental_memo()
 def get_mission_requirements():
     
     df, _  = get_log_table('Mission Requirements')
@@ -198,7 +197,7 @@ def get_mission_requirements():
        
     return df
 
-# @st.experimental_memo()
+@st.experimental_memo()
 def get_mission_logs():
     
     df, _  = get_log_table('Mission Logs')
@@ -212,27 +211,27 @@ def get_mission_logs():
     df = summarise_start_end(df) 
     
     df_require = df.groupby(['_requirement', 'Month_End']).sum('_capacity')
-    df_require.rename(columns={'_capacity' : 'Allocation'}, inplace=True)
     
     return df, df_require
 
-@st.experimental_memo()
+# @st.experimental_memo()
 def get_require_gaps(df_requirements: pd.DataFrame, df_require_logs: pd.DataFrame) -> pd.DataFrame:
     
-    df_gaps = df_requirements.join(df_require_logs, on=['index', 'Month_End'], rsuffix="logs")
-    df_gaps['Allocation'].fillna(0, inplace=True)
-    df_gaps['Gap'] = df_gaps['_capacity'] - df_gaps['Allocation']
+    df_gaps = df_requirements.join(df_require_logs, on=['index', 'Month_End'], rsuffix="_logs")
+    df_gaps['_capacity_logs'].fillna(0.0, inplace=True)
+    df_gaps['Gap'] = df_gaps['_capacity'] - df_gaps['_capacity_logs']
+    
     
     return df_gaps
 
 @st.experimental_memo()
 def get_explorer_allocations(df_mission_logs):
-    df_explorers = df_mission_logs.groupby(["_EXPLORER", 'Month_End']).sum('Allocations')
+    df_explorers = df_mission_logs.groupby(["_EXPLORER", 'Month_End']).sum('Allocation')
     df_explorers.reset_index(inplace=True)
     df_explorers.set_index("_EXPLORER", inplace=True)
     df_explorers = explorers.join(df_explorers)
-    df_explorers['Capacity'].fillna(0, inplace=True)
-    df_explorers['Availability'] = 1 - df_explorers['Capacity']
+    df_explorers['_capacity'].fillna(0, inplace=True)
+    df_explorers['Availability'] = 1 - df_explorers['_capacity']
     df_explorers['Month_End'] = df_explorers['Month_End'].dt.date
     
     return df_explorers
@@ -242,7 +241,8 @@ df_mission_logs, df_require_logs = get_mission_logs()
 df_gaps = get_require_gaps(df_requirements, df_require_logs)
 df_explorers = get_explorer_allocations(df_mission_logs)
     
-with tab5:
+with tab_data:
+    st.write("Scenario Names")
     st.dataframe(scenarios)
 
     st.write("Requirements table")
@@ -254,7 +254,7 @@ with tab5:
     st.write("add up requirements")
     st.dataframe(df_gaps)
 
-with tab1:
+with tab_require:
     st.title("Mission Requirements")
     st.write("Number of people required by month")
     
@@ -268,7 +268,7 @@ with tab1:
     
     st.dataframe(df[['Client_Name', "Mission_Name", "Role_Name", 'Seniority', "Capacity"]].drop_duplicates())
     
-with tab2:
+with tab_allocate:
     st.title("Mission Logs")
     st.write("Number of people allocated by month")
     
@@ -280,19 +280,26 @@ with tab2:
     
     st.dataframe(df[["Mission_Name", "Role_Name", 'EXPLORER_Name', "Capacity"]].drop_duplicates())
 
-with tab3:
+with tab_gap:
     st.title("Gaps in allocation")
     
     df = df_filter_dates(df_gaps, start_date=choice_start, end_date=choice_end)
     df = df_filter_isin(df, requirements_filter)
     
-    base, bar = get_base_chart(df, groupby=choice_groupby, values="Gap")    
-    st.altair_chart(bar, use_container_width=True)
+    base, bar = get_base_chart(df, groupby=choice_groupby, values="Gap")   
+    
+    df['_gap_prob'] = df['Gap'] * df['_probability']
+    line = base.mark_line(color='red').encode(y='sum(_gap_prob)')
+     
+    st.altair_chart(bar + line, use_container_width=True)
         
     df = df[df['Gap'] != 0]
-    st.dataframe(df[["Mission_Name", "Role_Name", 'Seniority', 'Month_End', "Capacity", 'Allocation', 'Gap']].drop_duplicates())
+    df = df.drop_duplicates(subset = ["Mission_Name", "Role_Name", 'Seniority', "Capacity", 'Gap'])
+    df = df[["Mission_Name", "Role_Name", 'Seniority', 'Month_End', "Capacity", 'Gap']]                        
     
-with tab4:
+    st.dataframe(df)
+    
+with tab_explorers:
     st.title("Explorer Allocations")
     st.write("Number of people allocated by month")
     st.write("not linked to filters on the left on left")
