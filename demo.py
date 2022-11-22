@@ -221,17 +221,20 @@ def get_require_gaps(df_requirements: pd.DataFrame, df_require_logs: pd.DataFram
     df_gaps['_capacity_logs'].fillna(0.0, inplace=True)
     df_gaps['Gap'] = df_gaps['_capacity'] - df_gaps['_capacity_logs']
     
-    
     return df_gaps
 
 @st.experimental_memo()
-def get_explorer_allocations(df_mission_logs):
-    df_explorers = df_mission_logs.groupby(["_EXPLORER", 'Month_End']).sum('Allocation')
+def get_explorer_allocations(df_mission_logs, explorers: pd.DataFrame):
+    
+    df = df_mission_logs[df_mission_logs['_capacity'] != 0]
+    df.drop_duplicates(subset=["index", "_EXPLORER", "Month_End", 'Capacity'], inplace=True)
+    
+    df_explorers = df.groupby(["_EXPLORER", 'Month_End']).sum('_capacity')
     df_explorers.reset_index(inplace=True)
     df_explorers.set_index("_EXPLORER", inplace=True)
     df_explorers = explorers.join(df_explorers)
     df_explorers['_capacity'].fillna(0, inplace=True)
-    df_explorers['Availability'] = 1 - df_explorers['_capacity']
+    df_explorers['Availability'] = df_explorers['_capacity'] - 1
     df_explorers['Month_End'] = df_explorers['Month_End'].dt.date
     
     return df_explorers
@@ -239,7 +242,7 @@ def get_explorer_allocations(df_mission_logs):
 df_requirements = get_mission_requirements()
 df_mission_logs, df_require_logs = get_mission_logs()
 df_gaps = get_require_gaps(df_requirements, df_require_logs)
-df_explorers = get_explorer_allocations(df_mission_logs)
+df_explorers = get_explorer_allocations(df_mission_logs, explorers)
     
 with tab_data:
     st.write("Scenario Names")
@@ -253,6 +256,9 @@ with tab_data:
     
     st.write("add up requirements")
     st.dataframe(df_gaps)
+    
+    st.write("Explorers")
+    st.dataframe(explorers)
 
 with tab_require:
     st.title("Mission Requirements")
@@ -272,7 +278,8 @@ with tab_allocate:
     st.title("Mission Logs")
     st.write("Number of people allocated by month")
     
-    df = df_filter_dates(df_mission_logs, start_date=choice_start, end_date=choice_end)
+    df = df_mission_logs[df_mission_logs['_capacity'] != 0.0]
+    df = df_filter_dates(df, start_date=choice_start, end_date=choice_end)
     df = df_filter_isin(df, requirements_filter)
     
     base, bar = get_base_chart(df, groupby=choice_groupby)
@@ -308,6 +315,9 @@ with tab_explorers:
     
     mask = (df_explorers['Month_End'] >= pd.to_datetime(choice_start)) & (df_explorers['Month_End'] <= pd.to_datetime(choice_end))
     df = df_explorers[mask]    
+    
+    base, bar = get_base_chart(df, groupby="Role_Name", values="Availability")
+    st.altair_chart(bar, use_container_width=True)
     
     if show_not_allocated:
         df = df[df['Capacity'] != 1]
