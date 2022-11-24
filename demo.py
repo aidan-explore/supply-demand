@@ -14,7 +14,7 @@ AIRTABLE_BASE_ID = "appTZVq2CZuxr4CoZ"
 AIRTABLE_SCHEMA = {
     'Mission Requirements' : ['Requirement', 'Mission', 'Role', 'Seniority', 'Capacity', 'Client', "_prob", "_renewal", '_start_date', '_end_date', '_end_mission', "Scenario"],
     'Mission Logs' : ['Mission Log', 'Client', 'Mission', 'Role', 'Seniority', 'EXPLORER', 'Capacity', "_prob", "_renewal", '_start_date', '_end_date', 'mission_requirement', "Scenario", "State"],
-    'EXPLORER' : ['EXPLORER', 'ROLE', 'Belt Colour'],
+    'EXPLORER' : ['EXPLORER', 'Role', 'Belt Colour', 'Start Date', 'End Date', 'Active'],
     'Roles' : ['Role', 'Capability'],
     'Scenarios' : ['Scenario', 'Probability'],
     "Clients" : ['Client', 'Status'],
@@ -66,6 +66,8 @@ def get_raw_data():
     requirements = get_raw_airtable(AIRTABLE_TOKEN, AIRTABLE_BASE_ID, "Mission Requirements")
     logs         = get_raw_airtable(AIRTABLE_TOKEN, AIRTABLE_BASE_ID, "Mission Logs")
     
+    explorers = air_join(explorers, roles, "Role") 
+    
     return roles, missions, clients, explorers, scenarios, requirements, logs
 
 @st.experimental_memo()
@@ -93,6 +95,8 @@ def get_mission_requirements(df_require: pd.DataFrame) -> pd.DataFrame:
 
 @st.experimental_memo()
 def get_mission_logs(df_logs: pd.DataFrame) -> pd.DataFrame:
+    
+    df  = df_logs[df_logs['State'] != "Rejected"]
     
     df = air_join(df_logs, roles, "Role")
     df = air_join(df, missions, "Mission")
@@ -128,14 +132,13 @@ def get_require_gaps(df_requirements: pd.DataFrame, df_require_logs: pd.DataFram
 def get_explorer_allocations(df_mission_logs, explorers: pd.DataFrame):
     
     df = df_mission_logs[df_mission_logs['_capacity'] != 0]
-    df.drop_duplicates(subset=["id", "EXPLORER", "Month_End", 'Capacity'], inplace=True)
     
     df_explorers = df.groupby(["EXPLORER", 'Month_End']).sum('_capacity')
     df_explorers.reset_index(inplace=True)
     df_explorers.set_index("EXPLORER", inplace=True)
     df_explorers = explorers.join(df_explorers)
     df_explorers['_capacity'].fillna(0, inplace=True)
-    df_explorers['Availability'] = df_explorers['_capacity'] - 1
+    df_explorers['Availability'] = df_explorers['_capacity'] - 1 if df_explorers['Active'] else 0
     
     return df_explorers
 
@@ -198,6 +201,7 @@ def enrich_data(requirements, logs, explorers):
     
     df_mission_logs, df_require_logs = get_mission_logs(logs)
     df_gaps = get_require_gaps(df_requirements, df_require_logs)
+    
     df_explorers = get_explorer_allocations(df_mission_logs, explorers)
     
     # TODO: find out why i need to do 
@@ -207,6 +211,15 @@ def enrich_data(requirements, logs, explorers):
     return df_requirements, df_mission_logs, df_require_logs, df_gaps, df_explorers
 
 # serve nodes
+def color_allocted(value: float) -> str:
+    if value > 1:
+        color = 'red' 
+    elif value < 1:
+        color = 'green'
+    else:
+        return None
+    return f'background-color: {color}'
+    
 def get_base_chart(data, groupby: str, values: str = "_capacity"):
     
     base = alt.Chart(data).encode(x="Month_End")
@@ -271,15 +284,18 @@ with tab_data:
     st.write("Mission Logs")
 
     st.dataframe(df_mission_logs)
+    st.download_button(
+        "Download Requirements",
+        convert_df(df_mission_logs),
+        "mission_logs.csv",
+        "text/csv",
+        key='download-mission_logs'
+    )
     st.write("Requirement Mission Logs")
     st.dataframe(df_require_logs.head())
     
-    # st.write("add up requirements")
-    # st.dataframe(df_gaps)
-    
     st.write("Explorers")
     st.dataframe(df_explorers)
-
 
 with tab_require:
     st.title("Mission Requirements")
@@ -332,20 +348,42 @@ with tab_explorers:
     st.write("Number of people allocated by month")
     st.write("not linked to filters on the left on left")
         
-    show_not_allocated = st.checkbox("Show only Explorers not fully allocated")
-    
-    mask = (df_explorers['Month_End'] >= pd.to_datetime(choice_start)) & (df_explorers['Month_End'] <= pd.to_datetime(choice_end))
-    df = df_explorers[mask]    
+    df = df_filter_dates(df_explorers, start_date=choice_start, end_date=choice_end)
+    df = df_filter_isin(df, requirements_filter)
     
     base, bar = get_base_chart(df, groupby="Role_Name", values="Availability")
     st.altair_chart(bar, use_container_width=True)
     
-    if show_not_allocated:
-        df = df[df['Capacity'] != 1]
-        
-    df = df.pivot_table(index="EXPLORER", columns="Month_End", values="Capacity", fill_value=0, aggfunc="sum")
+    show_not_allocated = st.checkbox("Show only Explorers not fully allocated")
 
-    st.dataframe(df.drop_duplicates())
+    df_table = df.reset_index()
+    df_table = df_table.pivot_table(index='index', columns="Month_End", values="_capacity", fill_value=0, aggfunc="sum")
+
+    df_table.rename(columns={col: str(col)[0:10] for col in df_table.columns}, inplace=True)
+    df_table['_average_allocation'] = abs(df_table.mean(axis=1) - 1)    
+    
+    explorer_cols = ['EXPLORER', "Role_Name", 'Belt Colour', 'Active']
+    df_table = df_table.join(explorers[explorer_cols])
+    
+    df_table['Active'].fillna(False, inplace=True)
+    df_table = df_table[df_table['Active']]
+
+    df_table.set_index(explorer_cols, inplace=True)
+    
+    df_table.sort_values('_average_allocation', ascending=False, inplace=True) 
+    
+    if show_not_allocated:
+        df_table = df_table[df_table['_average_allocation'] != 0]
+
+    st.dataframe(df_table.style.applymap(color_allocted).format("{:.1%}"))
+    
+    st.download_button(
+        "Download Explorer Allocations",
+        convert_df(df),
+        "allocations.csv",
+        "text/csv",
+        key='download-explorer-allocations'
+    )
 
 
     
