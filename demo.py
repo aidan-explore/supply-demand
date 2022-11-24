@@ -137,8 +137,12 @@ def get_explorer_allocations(df_mission_logs, explorers: pd.DataFrame):
     df_explorers.reset_index(inplace=True)
     df_explorers.set_index("EXPLORER", inplace=True)
     df_explorers = explorers.join(df_explorers)
+    
     df_explorers['_capacity'].fillna(0, inplace=True)
-    df_explorers['Availability'] = df_explorers['_capacity'] - 1 if df_explorers['Active'] else 0
+    df_explorers.loc[df_explorers['Start Date'] > df_explorers['Month_End'], '_capacity'] = None
+    df_explorers.loc[df_explorers['End Date'] < df_explorers['Month_End'], '_capacity'] = None    
+    
+    df_explorers['Availability'] = df_explorers['_capacity'] - 1 
     
     return df_explorers
 
@@ -211,13 +215,19 @@ def enrich_data(requirements, logs, explorers):
     return df_requirements, df_mission_logs, df_require_logs, df_gaps, df_explorers
 
 # serve nodes
-def color_allocted(value: float) -> str:
+def color_allocated(value: float) -> str:
+    if pd.isnull(value):
+        color = 'blue'
+    
     if value > 1:
         color = 'red' 
+        
     elif value < 1:
         color = 'green'
+        
     else:
         return None
+    
     return f'background-color: {color}'
     
 def get_base_chart(data, groupby: str, values: str = "_capacity"):
@@ -354,28 +364,33 @@ with tab_explorers:
     base, bar = get_base_chart(df, groupby="Role_Name", values="Availability")
     st.altair_chart(bar, use_container_width=True)
     
-    show_not_allocated = st.checkbox("Show only Explorers not fully allocated")
+    col1, col2 = st.columns(2)
+    
+    show_not_allocated = col1.checkbox("Show only Explorers not fully allocated")
+    show_active        = col2.checkbox("Show only Active Explorers", value=True)
 
-    df_table = df.reset_index()
-    df_table = df_table.pivot_table(index='index', columns="Month_End", values="_capacity", fill_value=0, aggfunc="sum")
+    df.reset_index(inplace=True)
+    df = df.pivot_table(index='index', columns="Month_End", values="_capacity", fill_value=None, aggfunc="sum")
 
-    df_table.rename(columns={col: str(col)[0:10] for col in df_table.columns}, inplace=True)
-    df_table['_average_allocation'] = abs(df_table.mean(axis=1) - 1)    
+    df.rename(columns={col: str(col)[0:10] for col in df.columns}, inplace=True)
     
-    explorer_cols = ['EXPLORER', "Role_Name", 'Belt Colour', 'Active']
-    df_table = df_table.join(explorers[explorer_cols])
+    explorer_cols = ['EXPLORER', "Role_Name", 'Belt Colour', 'Active', 'Start Date', 'End Date']
     
-    df_table['Active'].fillna(False, inplace=True)
-    df_table = df_table[df_table['Active']]
-
-    df_table.set_index(explorer_cols, inplace=True)
+    df = df.join(explorers[explorer_cols])
+    df['_average_allocation'] = abs(df.mean(axis=1) - 1)    
     
-    df_table.sort_values('_average_allocation', ascending=False, inplace=True) 
-    
+    if show_active:
+        df['Active'].fillna(False, inplace=True)
+        df = df[df['Active']]
+        
     if show_not_allocated:
-        df_table = df_table[df_table['_average_allocation'] != 0]
-
-    st.dataframe(df_table.style.applymap(color_allocted).format("{:.1%}"))
+        df = df[df['_average_allocation'] != 0]
+    
+    df.set_index(['EXPLORER', "Role_Name", 'Belt Colour'], inplace=True)    
+    df.drop(columns=['Active', 'Start Date', 'End Date'], inplace=True)
+    df.sort_values('_average_allocation', ascending=False, inplace=True) 
+        
+    st.dataframe(df.style.applymap(color_allocated).format("{:.1%}").highlight_null(props="color: transparent;"))
     
     st.download_button(
         "Download Explorer Allocations",
