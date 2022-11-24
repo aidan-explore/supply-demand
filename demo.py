@@ -12,9 +12,19 @@ AIRTABLE_TOKEN = os.environ['AIRTABLE_TOKEN']
 AIRTABLE_BASE_ID = "appTZVq2CZuxr4CoZ"
 
 AIRTABLE_SCHEMA = {
-    'Mission Requirements' : ['Requirement', 'Mission', 'Role', 'Seniority', 'Capacity', 'Client', "_renewal", '_start_date', '_end_date', '_prob', "Scenario"],
-    'Mission Logs' : ['Client', 'Mission Log', 'Mission', 'Role', 'Seniority', 'EXPLORER', 'Capacity', "_prob", "_renewal", '_start_date', '_end_date', 'mission_requirement', "Scenario"]
+    'Mission Requirements' : ['Requirement', 'Mission', 'Role', 'Seniority', 'Capacity', 'Client', "_prob", "_renewal", '_start_date', '_end_date', '_end_mission', "Scenario"],
+    'Mission Logs' : ['Mission Log', 'Client', 'Mission', 'Role', 'Seniority', 'EXPLORER', 'Capacity', "_prob", "_renewal", '_start_date', '_end_date', 'mission_requirement', "Scenario", "State"],
+    'EXPLORER' : ['EXPLORER', 'ROLE', 'Belt Colour'],
+    'Roles' : ['Role', 'Capability'],
+    'Scenarios' : ['Scenario', 'Probability'],
+    "Clients" : ['Client', 'Status'],
+    "Mission" : ['Mission', 'Start Date', 'End Date', 'Scenario', 'Renewal']
 }
+
+# helper code
+@st.experimental_memo()
+def convert_df(df):
+   return df.to_csv(index=False).encode('utf-8')
 
 def get_first_list(input):
     if type(input) == str:
@@ -25,56 +35,111 @@ def get_first_list(input):
     
     return input
 
-@st.experimental_memo()
-def get_relation_name(table_name: str, field: str) -> pd.DataFrame:
-    airtable   = Table(AIRTABLE_TOKEN, AIRTABLE_BASE_ID, table_name)
-    get_data   = {k['id']: k['fields'][field] for k in airtable.all()}
-    df_lookups = pd.DataFrame.from_dict(get_data, orient="index", columns=[field + "_Name"])
-
-    return df_lookups
-
-@st.experimental_memo()
-def create_relations(input_series : pd.Series) -> dict:
-    dict_relation = {}
-
-    for _id, relation_list in input_series.items():
-        if type(relation_list) != list:
-            continue
-        
-        for relation in relation_list:
-            if relation in dict_relation.keys():
-                dict_relation[relation].append(_id)
-            else:
-                dict_relation[relation] = [_id]
-                
-    return dict_relation
-
-@st.experimental_memo()
-def get_relations(df, df_lookups:pd.DataFrame, column_name:str):
-    if column_name not in df.columns:
-        return df, {}
+# ingestions nodes
+def get_raw_airtable(airtable_token: str, airtable_base: str, air_tablename: str) -> pd.DataFrame:
     
-    dict_relations        = create_relations(df[column_name])
-    df['_' + column_name] = df[column_name].apply(get_first_list)
-    df                    = df.join(df_lookups, on='_' + column_name)
+    json = Table(airtable_token, airtable_base, air_tablename).all()
+    df   = pd.json_normalize(json)
+    df.set_index('id', inplace=True)
+    df.rename(columns={col: col.replace('fields.', '') for col in df.columns}, inplace=True)
+    df = df[AIRTABLE_SCHEMA[air_tablename]]
     
-    return df, dict_relations
-
-@st.experimental_memo()
-def get_requirements(table_name:str) -> pd.DataFrame:
-    
-    mission_requirements = Table(AIRTABLE_TOKEN, AIRTABLE_BASE_ID, table_name)
-    require_fields       = AIRTABLE_SCHEMA[table_name]
-
-    json_mission_requirements = {
-        record['id'] : {k: v for k, v in record['fields'].items() if k in require_fields} 
-        for record in mission_requirements.all()
-        }
-
-    df = pd.DataFrame.from_dict(json_mission_requirements, orient="index")
-
     return df
 
+def air_join(left_df: pd.DataFrame, right_df: pd.DataFrame, left_on: str, right_name: str = None) -> pd.DataFrame:
+    
+    if not right_name:
+        right_name = left_on
+
+    left_df[left_on] = left_df[left_on].apply(get_first_list)   
+    return left_df.join(right_df[right_name], on=left_on, rsuffix="_Name")
+
+@st.experimental_memo()
+def get_raw_data():
+
+    roles     = get_raw_airtable(AIRTABLE_TOKEN, AIRTABLE_BASE_ID, "Roles")
+    missions  = get_raw_airtable(AIRTABLE_TOKEN, AIRTABLE_BASE_ID, "Mission")
+    clients   = get_raw_airtable(AIRTABLE_TOKEN, AIRTABLE_BASE_ID, "Clients")
+    explorers = get_raw_airtable(AIRTABLE_TOKEN, AIRTABLE_BASE_ID, "EXPLORER")
+    scenarios = get_raw_airtable(AIRTABLE_TOKEN, AIRTABLE_BASE_ID, "Scenarios")
+
+    requirements = get_raw_airtable(AIRTABLE_TOKEN, AIRTABLE_BASE_ID, "Mission Requirements")
+    logs         = get_raw_airtable(AIRTABLE_TOKEN, AIRTABLE_BASE_ID, "Mission Logs")
+    
+    return roles, missions, clients, explorers, scenarios, requirements, logs
+
+@st.experimental_memo()
+def get_mission_requirements(df_require: pd.DataFrame) -> pd.DataFrame:
+    
+    df = air_join(df_require, roles, "Role")
+    df = air_join(df, missions, "Mission")
+    df = air_join(df, clients, "Client")
+    df = air_join(df, scenarios, "Scenario")
+        
+    df  = df[df['Scenario'] != "9. Lost - 0%"]
+    
+    df['_probability'] = df['_prob'].apply(get_first_list)
+    df['_probability'].fillna(0.0, inplace=True)
+    df['_probability'] = df['_probability'].astype(float)
+    
+    df['_end_mission'] = df['_end_mission'].apply(get_first_list)
+    df['_end_mission'] = pd.to_datetime(df['_end_mission'])
+            
+    df = summarise_start_end(df) 
+    
+    df['_prob_require'] = df['_capacity'] * df['_probability']
+       
+    return df
+
+@st.experimental_memo()
+def get_mission_logs(df_logs: pd.DataFrame) -> pd.DataFrame:
+    
+    df = air_join(df_logs, roles, "Role")
+    df = air_join(df, missions, "Mission")
+    df = air_join(df, clients, "Client")
+    df = air_join(df, explorers, "EXPLORER")
+    
+    df['_requirement'] = df['mission_requirement'].apply(get_first_list)
+    df = df[df["Scenario"] != "Rejected"]
+    
+    df['_probability'] = df['_prob'].apply(get_first_list)
+    df['_probability'].fillna(0.0, inplace=True)
+    df['_probability'] = df['_probability'].astype(float)
+    
+    df = summarise_start_end(df) 
+    
+    df_require = df.groupby(['_requirement', 'Month_End']).sum('_capacity')
+    
+    return df, df_require
+
+@st.experimental_memo()
+def get_require_gaps(df_requirements: pd.DataFrame, df_require_logs: pd.DataFrame) -> pd.DataFrame:
+    
+    df_gaps = df_requirements.reset_index().join(df_require_logs, on=['id', 'Month_End'], rsuffix='_logs')
+    
+    df_gaps['_capacity_logs'].fillna(0.0, inplace=True)
+    df_gaps['Gap'] = df_gaps['_capacity'] - df_gaps['_capacity_logs']
+    
+    df_gaps.reset_index(inplace=True)
+    
+    return df_gaps
+
+@st.experimental_memo()
+def get_explorer_allocations(df_mission_logs, explorers: pd.DataFrame):
+    
+    df = df_mission_logs[df_mission_logs['_capacity'] != 0]
+    df.drop_duplicates(subset=["id", "EXPLORER", "Month_End", 'Capacity'], inplace=True)
+    
+    df_explorers = df.groupby(["EXPLORER", 'Month_End']).sum('_capacity')
+    df_explorers.reset_index(inplace=True)
+    df_explorers.set_index("EXPLORER", inplace=True)
+    df_explorers = explorers.join(df_explorers)
+    df_explorers['_capacity'].fillna(0, inplace=True)
+    df_explorers['Availability'] = df_explorers['_capacity'] - 1
+    
+    return df_explorers
+
+# enrich nodes
 @st.experimental_memo()
 def summarise_start_end(df: pd.DataFrame, freq = "1M", start_col: str = '_start_date', end_col: str = '_end_date', format='%Y-%m-%d') -> pd.DataFrame:
     
@@ -96,11 +161,14 @@ def summarise_start_end(df: pd.DataFrame, freq = "1M", start_col: str = '_start_
     df_temp['_capacity'] = df_temp['Capacity'].astype('float')
     df_temp.loc[df_temp['_start'] > df_temp['Month_Start'], '_capacity'] = 0.0
     df_temp.loc[df_temp['_end'] < df_temp['Month_End'], '_capacity'] = 0.0
-    
-    df_temp['_projected'] = df_temp['_capacity'] * df_temp['_probability']
-    df_temp.loc[df_temp["Month_End"] > df_temp['_end'], '_projected'] = df_temp["Capacity"] * df_temp['_renewal']
-        
+            
     return df_temp
+
+@st.experimental_memo()
+def project_requirements(df: pd.DataFrame) -> pd.DataFrame:
+    df['_projected'] = df['_capacity'] * df['_probability']
+    df.loc[df["Month_End"] > df['_end_mission'], '_projected'] = df["Capacity"] * df['_renewal']
+    return df
 
 @st.experimental_memo()
 def df_filter_dates(data: pd.DataFrame, start_date: dt.datetime, end_date: dt.datetime) -> pd.DataFrame:
@@ -109,7 +177,6 @@ def df_filter_dates(data: pd.DataFrame, start_date: dt.datetime, end_date: dt.da
     df = data[mask]
     
     return df
-    
 
 @st.experimental_memo()
 def df_filter_isin(data: pd.DataFrame, mask_dict:dict) -> pd.DataFrame:
@@ -124,7 +191,22 @@ def df_filter_isin(data: pd.DataFrame, mask_dict:dict) -> pd.DataFrame:
                 
     return df
 
+@st.experimental_memo()
+def enrich_data(requirements, logs, explorers):
+    df_requirements = get_mission_requirements(requirements)
+    df_requirements = project_requirements(df_requirements)
+    
+    df_mission_logs, df_require_logs = get_mission_logs(logs)
+    df_gaps = get_require_gaps(df_requirements, df_require_logs)
+    df_explorers = get_explorer_allocations(df_mission_logs, explorers)
+    
+    # TODO: find out why i need to do 
+    df_requirements.reset_index(inplace=True)
+    df_requirements.set_index(['id'], inplace=True)
+    
+    return df_requirements, df_mission_logs, df_require_logs, df_gaps, df_explorers
 
+# serve nodes
 def get_base_chart(data, groupby: str, values: str = "_capacity"):
     
     base = alt.Chart(data).encode(x="Month_End")
@@ -134,131 +216,70 @@ def get_base_chart(data, groupby: str, values: str = "_capacity"):
 
 def get_projected_chart(base: alt.Chart):
     
-    line = base.mark_line(color='red').encode(y="sum(_prob_require)")
-    line_projected = base.mark_line(color='red', strokeDash=[1, 5], ).encode(y="sum(_projected)")
+    line = base.mark_line(color='red', strokeWidth=5).encode(y="sum(_prob_require)")
+    line_projected = base.mark_line(color='red', strokeDash=[5, 2], strokeWidth=5).encode(y="sum(_projected)")
     
     return line, line_projected
 
+# start here
 st.set_page_config(
     page_title="ExploreAI Mission Requirements", page_icon="⬇", layout="centered"
 )
 
 st.image(image='eai.png',caption='https://explore.ai')
 
-roles     = get_relation_name("Roles", 'Role')
-missions  = get_relation_name("Mission", "Mission")
-clients   = get_relation_name("Clients", "Client")
-explorers = get_relation_name("EXPLORER", "EXPLORER")
-scenarios = get_relation_name("Scenarios", "Scenario")
+# ingest data
+roles, missions, clients, explorers, scenarios, requirements, logs = get_raw_data()
+
+# enrich data
+df_requirements, df_mission_logs, df_require_logs, df_gaps, df_explorers = enrich_data(requirements, logs, explorers)
 
 # define the streamlit sidebar
 choice_start    = st.sidebar.date_input('Select your start date:', value=pd.to_datetime('2022-04-01')) 
 choice_end      = st.sidebar.date_input('Select your end date:', value=pd.to_datetime('2023-06-30')) 
 choice_groupby  = st.sidebar.radio('Select what to group by:', ('None', 'Seniority', "Role_Name", "Mission_Name", 'Client_Name', "Scenario")) 
-choice_role     = st.sidebar.multiselect('Select your Roles:', roles['Role_Name'].unique())
-choice_client   = st.sidebar.multiselect('Select your Client:', clients['Client_Name'].unique())
-choice_mission  = st.sidebar.multiselect('Select your Mission:', missions['Mission_Name'].unique())
-choice_scenario = st.sidebar.multiselect('Select your Scenarios:', scenarios['Scenario_Name'].unique(), disabled=True)
+choice_role     = st.sidebar.multiselect('Select your Roles:', roles['Role'].unique())
+choice_client   = st.sidebar.multiselect('Select your Client:', clients['Client'].unique())
+choice_mission  = st.sidebar.multiselect('Select your Mission:', missions['Mission'].unique())
+choice_scenario = st.sidebar.multiselect('Select your Scenarios:', scenarios['Scenario'].unique(), disabled=True)
 
 requirements_filter = {
     "Role_Name" : choice_role,
-    "Mission_Name" : choice_mission,
     "Client_Name" : choice_client,
+    "Mission_Name" : choice_mission,
     "Scenario_Name" : choice_scenario,
     }
 
-tab_require, tab_allocate, tab_gap, tab_explorers, tab_data = st.tabs(["Requirements", "Allocations", "Gaps", "Explorers", "All Data"])
+tab_require, tab_allocate, tab_gap, tab_explorers, tab_missions, tab_data = st.tabs(["Requirements", "Allocations", "Gaps", "Explorers", "Missions", "All Data"])
 
-@st.experimental_memo(ttl=60 * 60 * 24)
-def get_log_table(table_name:str):
-    df = get_requirements(table_name)    
-    
-    link_dict = {}
-    df, link_dict['Role']      = get_relations(df, roles, "Role")
-    df, link_dict['Mission']   = get_relations(df, missions, "Mission")
-    df, link_dict['Client']    = get_relations(df, clients, "Client")
-    df, link_dict['Explorer']  = get_relations(df, explorers, "EXPLORER")
-    df, link_dict['Scenarios'] = get_relations(df, scenarios, "Scenario")
-    
-    return df, link_dict
+with tab_missions:
+    st.title("Mission Details")
+    st.dataframe(missions)
 
-@st.experimental_memo()
-def get_mission_requirements():
-    
-    df, _  = get_log_table('Mission Requirements')
-    df     = df[df['Scenario'] != "9. Lost - 0%"]
-    df['_probability'] = df['_prob'].apply(get_first_list)
-    df['_probability'].fillna(0.0, inplace=True)
-    df['_probability'] = df['_probability'].astype(float)
-        
-    df = summarise_start_end(df) 
-    
-    df['_prob_require'] = df['_capacity'] * df['_probability']
-       
-    return df
-
-@st.experimental_memo()
-def get_mission_logs():
-    
-    df, _  = get_log_table('Mission Logs')
-    df['_requirement'] = df['mission_requirement'].apply(get_first_list)
-    df = df[df["Scenario"] != "Rejected"]
-    
-    df['_probability'] = df['_prob'].apply(get_first_list)
-    df['_probability'].fillna(0.0, inplace=True)
-    df['_probability'] = df['_probability'].astype(float)
-    
-    df = summarise_start_end(df) 
-    
-    df_require = df.groupby(['_requirement', 'Month_End']).sum('_capacity')
-    
-    return df, df_require
-
-# @st.experimental_memo()
-def get_require_gaps(df_requirements: pd.DataFrame, df_require_logs: pd.DataFrame) -> pd.DataFrame:
-    
-    df_gaps = df_requirements.join(df_require_logs, on=['index', 'Month_End'], rsuffix="_logs")
-    df_gaps['_capacity_logs'].fillna(0.0, inplace=True)
-    df_gaps['Gap'] = df_gaps['_capacity'] - df_gaps['_capacity_logs']
-    
-    return df_gaps
-
-@st.experimental_memo()
-def get_explorer_allocations(df_mission_logs, explorers: pd.DataFrame):
-    
-    df = df_mission_logs[df_mission_logs['_capacity'] != 0]
-    df.drop_duplicates(subset=["index", "_EXPLORER", "Month_End", 'Capacity'], inplace=True)
-    
-    df_explorers = df.groupby(["_EXPLORER", 'Month_End']).sum('_capacity')
-    df_explorers.reset_index(inplace=True)
-    df_explorers.set_index("_EXPLORER", inplace=True)
-    df_explorers = explorers.join(df_explorers)
-    df_explorers['_capacity'].fillna(0, inplace=True)
-    df_explorers['Availability'] = df_explorers['_capacity'] - 1
-    df_explorers['Month_End'] = df_explorers['Month_End'].dt.date
-    
-    return df_explorers
-
-df_requirements = get_mission_requirements()
-df_mission_logs, df_require_logs = get_mission_logs()
-df_gaps = get_require_gaps(df_requirements, df_require_logs)
-df_explorers = get_explorer_allocations(df_mission_logs, explorers)
-    
 with tab_data:
-    st.write("Scenario Names")
-    st.dataframe(scenarios)
 
     st.write("Requirements table")
     st.dataframe(df_requirements)
+    st.download_button(
+        "Download Requirements",
+        convert_df(df_requirements),
+        "requirements.csv",
+        "text/csv",
+        key='download-requirements'
+    )
     
     st.write("Mission Logs")
+
     st.dataframe(df_mission_logs)
+    st.write("Requirement Mission Logs")
+    st.dataframe(df_require_logs.head())
     
-    st.write("add up requirements")
-    st.dataframe(df_gaps)
+    # st.write("add up requirements")
+    # st.dataframe(df_gaps)
     
     st.write("Explorers")
-    st.dataframe(explorers)
+    st.dataframe(df_explorers)
+
 
 with tab_require:
     st.title("Mission Requirements")
@@ -322,7 +343,7 @@ with tab_explorers:
     if show_not_allocated:
         df = df[df['Capacity'] != 1]
         
-    df = df.pivot_table(index="EXPLORER_Name", columns="Month_End", values="Capacity", fill_value=0, aggfunc="sum")
+    df = df.pivot_table(index="EXPLORER", columns="Month_End", values="Capacity", fill_value=0, aggfunc="sum")
 
     st.dataframe(df.drop_duplicates())
 
